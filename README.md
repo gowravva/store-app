@@ -1,96 +1,80 @@
-# The Store — Dockerized + CI/CD
+# The Store — React + FastAPI, with CI/CD
 
-A simple, self-contained shop: **frontend + backend + database, all in one app.**
+A simple, self-contained shop: **React frontend + FastAPI backend + SQLite database.**
 It owns its own products, stock and orders — nothing else needs to run.
+Deployed by pushing code straight to an AWS EC2 server (no Docker).
 
 ```
 applicaion1/
-├── docker-compose.yml           # runs the whole app (backend + frontend)
-├── .env.example                 # copy to .env and fill in
-├── .github/workflows/deploy.yml # CI/CD: build + deploy on every push to main
+├── .github/workflows/deploy.yml  # CI/CD: build + deploy on every push to main
+├── deploy/
+│   ├── store-backend.service     # systemd unit (keeps the backend running)
+│   └── nginx-store.conf          # nginx config (serves the frontend)
 └── store-app/
-    ├── backend/                 # FastAPI, port 8001
-    │   ├── main.py                  the API
-    │   ├── database.py              Product + Order tables
-    │   ├── store.db                 the database (SQLite = one file)
-    │   └── Dockerfile
-    └── frontend/                # React + Vite -> nginx static
-        ├── Dockerfile
-        └── nginx.conf
+    ├── backend/                  # FastAPI, port 8001
+    │   ├── main.py                   the API
+    │   ├── database.py               Product + Order tables
+    │   └── store.db                  the database (SQLite = one file)
+    └── frontend/                 # React + Vite
+        └── src/App.jsx
 ```
 
 ## The three parts
 
-| Part | What it is | Where |
+| Part | Technology | Where |
 |---|---|---|
-| **Frontend** | The shop page users see | `frontend/` (React) |
-| **Backend** | The API / logic | `backend/main.py` (FastAPI) |
-| **Database** | Products + orders | `backend/store.db` (SQLite) |
+| **Frontend** | React + Vite | `store-app/frontend/` |
+| **Backend** | FastAPI (Python) | `store-app/backend/main.py` |
+| **Database** | SQLite | `store-app/backend/store.db` |
 
-## API endpoints
-- `GET  /catalog` — list products for sale
-- `POST /checkout` — sell a product (reduces stock, records the order)
-- `GET  /orders` — every sale, newest first
-- `POST /products` — add a new product
-- `POST /products/{id}/restock` — add more stock
+## Run it locally
 
-The backend seeds a few demo products on first run, so the shop isn't empty.
-
-## Run it locally — the simple way (no Docker)
+Two terminals:
 
 ```bash
-# backend
+# Terminal 1 — backend
 cd store-app/backend
 pip install -r requirements.txt
-uvicorn main:app --reload --port 8001      # http://localhost:8001/docs
+python -m uvicorn main:app --reload --port 8001     # http://localhost:8001/docs
 
-# frontend (in a second terminal)
+# Terminal 2 — frontend
 cd store-app/frontend
 npm install
-npm run dev                                # http://localhost:5173
+npm run dev                                          # http://localhost:5173
 ```
 
-## Run it with Docker
+Open http://localhost:5173.
 
+## Deploy to a server — CI/CD on every push
+
+### How it works
+On every push to `main`, GitHub Actions:
+1. **build** — installs the backend, import-checks it, and builds the frontend (fails fast if broken)
+2. **deploy** — copies the code to your EC2 server over SSH, then:
+   - backend: creates a Python venv, installs deps, runs it via a **systemd** service
+   - frontend: `npm run build`, copies the static files into **nginx**
+
+### 1. Prepare the EC2 server (one time)
+SSH in (`ssh -i key.pem ec2-user@<IP>`) and install what's needed:
 ```bash
-cp .env.example .env
-docker compose up -d --build
+sudo dnf install -y python3 python3-pip nodejs npm nginx
+sudo systemctl enable --now nginx
 ```
-- Shopfront: http://localhost:8080
-- Backend API docs: http://localhost:8001/docs
-
-## CI/CD — auto-deploy on every push
-
-### 1. Push to GitHub
-```bash
-git add .
-git commit -m "Simple self-contained Store app + Docker + CI/CD"
-git branch -M main
-git remote add origin https://github.com/<you>/<repo>.git
-git push -u origin main
-```
+Open ports **80** (website) and **8001** (API) in the instance's **Security Group**.
 
 ### 2. Add GitHub Secrets
 Repo → **Settings → Secrets and variables → Actions → New repository secret**:
 
 | Secret | Value |
 |---|---|
-| `SERVER_HOST` | Server public IP (e.g. `141.148.x.x`) |
-| `SERVER_USER` | SSH user (OCI = `opc`, Ubuntu = `ubuntu`) |
-| `SSH_PRIVATE_KEY` | **Full** contents of your private key (incl. `-----BEGIN...`) |
+| `SERVER_HOST` | EC2 **public IPv4** (e.g. `13.233.x.x`) |
+| `SERVER_USER` | `ec2-user` |
+| `SSH_PRIVATE_KEY` | **Full** contents of your `.pem` key (incl. `-----BEGIN...`) |
 
-### 3. Prepare the server (one time)
-```bash
-# install Docker + compose plugin, then:
-sudo systemctl enable --now docker
-sudo usermod -aG docker $USER   # log out/in after this
-```
-Open ports **8080** (shopfront) and **8001** (API) in your cloud firewall.
+### 3. Deploy
+Push to `main` (or use **Run workflow** in the Actions tab). Then open:
+- Website: `http://<SERVER_HOST>/`
+- API docs: `http://<SERVER_HOST>:8001/docs`
 
-### 4. Push to deploy
-Every `git push` to `main` now:
-1. Builds both Docker images (fails fast if code is broken)
-2. Copies the project to the server over SSH
-3. Runs `docker compose up -d --build`
-
-Watch it live in the repo's **Actions** tab, then open `http://<SERVER_HOST>:8080`.
+> The frontend is served on port **80**, so the site is just `http://<SERVER_HOST>`.
+> Note: an EC2 public IP changes on stop/start — attach an **Elastic IP** to keep it fixed.

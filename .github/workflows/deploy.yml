@@ -7,20 +7,36 @@ on:
   workflow_dispatch:   # also lets you trigger it manually from the Actions tab
 
 jobs:
-  # 1) CI: prove both images build before we touch the server.
+  # 1) CI: prove the code is valid before touching the server.
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build backend image
-        run: docker build -t store-backend ./store-app/backend
+      # --- Backend: install deps + import-check ---
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check backend
+        working-directory: store-app/backend
+        run: |
+          pip install -r requirements.txt
+          python -c "import main"   # fails the build if the code is broken
 
-      - name: Build frontend image
-        run: docker build -t store-frontend ./store-app/frontend
+      # --- Frontend: make sure it builds ---
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build frontend
+        working-directory: store-app/frontend
+        run: |
+          npm ci
+          npm run build
 
-  # 2) CD: ship the code to the server and bring the stack up.
+  # 2) CD: copy the code to the server and (re)start the app.
   deploy:
     needs: build          # only deploy if the build job passed
     runs-on: ubuntu-latest
@@ -36,25 +52,34 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "."
           target: "/home/${{ secrets.SERVER_USER }}/store-app"
-          # Don't ship local junk; the server rebuilds from source.
-          rm: true
+          # rm:false so the server keeps store.db and the python venv between deploys.
 
-      - name: Build and run on server
+      - name: Install & restart on server
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /home/${{ secrets.SERVER_USER }}/store-app
+            set -e
+            DIR=/home/${{ secrets.SERVER_USER }}/store-app
 
-            # Write the runtime config the containers need.
-            cat > .env <<EOF
-            VITE_API_URL=http://${{ secrets.SERVER_HOST }}:8001
-            EOF
+            # ---------- Backend (FastAPI via systemd) ----------
+            cd $DIR/store-app/backend
+            python3 -m venv venv 2>/dev/null || true
+            ./venv/bin/pip install --upgrade pip
+            ./venv/bin/pip install -r requirements.txt
+            sudo cp $DIR/deploy/store-backend.service /etc/systemd/system/store-backend.service
+            sudo systemctl daemon-reload
+            sudo systemctl enable store-backend
+            sudo systemctl restart store-backend
 
-            # Rebuild and restart only what changed. --build picks up new code.
-            docker compose up -d --build
-
-            # Tidy up old dangling images so the disk doesn't fill over time.
-            docker image prune -f
+            # ---------- Frontend (React build served by nginx) ----------
+            cd $DIR/store-app/frontend
+            export VITE_API_URL=http://${{ secrets.SERVER_HOST }}:8001
+            npm ci
+            npm run build
+            sudo rm -rf /usr/share/nginx/html/*
+            sudo cp -r dist/* /usr/share/nginx/html/
+            sudo cp $DIR/deploy/nginx-store.conf /etc/nginx/conf.d/store.conf
+            sudo systemctl restart nginx
