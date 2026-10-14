@@ -1,0 +1,60 @@
+name: Deploy Store App
+
+# Run on every push to main.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # also lets you trigger it manually from the Actions tab
+
+jobs:
+  # 1) CI: prove both images build before we touch the server.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t store-backend ./store-app/backend
+
+      - name: Build frontend image
+        run: docker build -t store-frontend ./store-app/frontend
+
+  # 2) CD: ship the code to the server and bring the stack up.
+  deploy:
+    needs: build          # only deploy if the build job passed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Copy project to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "."
+          target: "/home/${{ secrets.SERVER_USER }}/store-app"
+          # Don't ship local junk; the server rebuilds from source.
+          rm: true
+
+      - name: Build and run on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /home/${{ secrets.SERVER_USER }}/store-app
+
+            # Write the runtime config the containers need.
+            cat > .env <<EOF
+            VITE_API_URL=http://${{ secrets.SERVER_HOST }}:8001
+            EOF
+
+            # Rebuild and restart only what changed. --build picks up new code.
+            docker compose up -d --build
+
+            # Tidy up old dangling images so the disk doesn't fill over time.
+            docker image prune -f

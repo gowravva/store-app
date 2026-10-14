@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# The Store app: backend API + frontend shopfront + its own database.
+# One self-contained app — nothing else needs to run.
+#
+#   Run everything:   docker compose up -d --build
+#   Stop everything:  docker compose down
+#   Rebuild one:      docker compose up -d --build backend
+# ---------------------------------------------------------------------------
+
+services:
+  backend:
+    build: ./store-app/backend
+    image: store-backend
+    container_name: store-backend
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - STORE_DB_DIR=/app/data
+    volumes:
+      # Persist store.db so products & orders survive restarts and redeploys.
+      - store-data:/app/data
+
+  frontend:
+    build:
+      context: ./store-app/frontend
+      args:
+        # Baked into the static build. The browser uses this to call the
+        # Store backend, so it must be the PUBLIC address users can reach.
+        #   - local:       http://localhost:8001
+        #   - production:  http://<your-server-ip>:8001
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8001}
+    image: store-frontend
+    container_name: store-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  store-data:
