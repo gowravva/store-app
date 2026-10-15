@@ -65,8 +65,11 @@ jobs:
             DIR=/home/${{ secrets.SERVER_USER }}/store-app
 
             # ---------- Backend (FastAPI via systemd) ----------
+            # The code needs Python 3.10+; Amazon Linux's default python3 is 3.9,
+            # so we install and use python3.11 explicitly.
+            sudo dnf install -y python3.11
             cd $DIR/store-app/backend
-            python3 -m venv venv 2>/dev/null || true
+            python3.11 -m venv venv 2>/dev/null || true
             ./venv/bin/pip install --upgrade pip
             ./venv/bin/pip install -r requirements.txt
             sudo cp $DIR/deploy/store-backend.service /etc/systemd/system/store-backend.service
