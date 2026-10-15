@@ -79,7 +79,9 @@ jobs:
 
             # ---------- Frontend (React build served by nginx) ----------
             cd $DIR/store-app/frontend
-            export VITE_API_URL=http://${{ secrets.SERVER_HOST }}:8001
+            # Strip any stray whitespace/newline from the secret so the URL is clean.
+            HOST=$(echo "${{ secrets.SERVER_HOST }}" | tr -d '[:space:]')
+            export VITE_API_URL="http://${HOST}:8001"
             npm ci
             npm run build
             sudo rm -rf /usr/share/nginx/html/*
